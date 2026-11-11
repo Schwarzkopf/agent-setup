@@ -1,0 +1,30 @@
+name: Release
+
+# Neues Release:  git tag v1.0.0 && git push origin v1.0.0
+# Erst wenn alle Tests grün sind, wird das Release veröffentlicht. Der Link im Kurs
+# (releases/latest/download/...) zeigt danach automatisch auf die neue Version.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version eintragen
+        run: |
+          sed -i "s/^SETUP_VERSION=\"dev\"/SETUP_VERSION=\"${GITHUB_REF_NAME}\"/" install.sh
+          sed -i "s/^\$SetupVersion = 'dev'/\$SetupVersion = '${GITHUB_REF_NAME}'/" setup.ps1
+          grep -q "SETUP_VERSION=\"${GITHUB_REF_NAME}\"" install.sh
+          grep -q "SetupVersion = '${GITHUB_REF_NAME}'" setup.ps1
+      - name: Release veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" install.sh install.ps1 setup.ps1 --title "$GITHUB_REF_NAME" --generate-notes

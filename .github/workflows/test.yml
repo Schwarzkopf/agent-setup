@@ -1,0 +1,123 @@
+name: Test
+
+# Läuft bei jeder Änderung, jeden Montag (fällt auf, wenn ein Hersteller Downloads ändert)
+# und vor jedem Release (release.yml ruft diesen Workflow auf).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  EVOOMING_SYNCTHING_PASSWORD: ci-test-passwort
+  EVOOMING_RUSTDESK_PASSWORD: ci-test-passwort-rustdesk
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -S warning install.sh
+      - name: PowerShell parsen und prüfen
+        shell: pwsh
+        run: |
+          foreach ($f in 'setup.ps1', 'install.ps1') {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $errors | Format-List; throw "$f lässt sich nicht parsen" }
+          }
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $issues = Invoke-ScriptAnalyzer -Path setup.ps1 -Severity Error
+          $issues += Invoke-ScriptAnalyzer -Path install.ps1 -Severity Error
+          if ($issues) { $issues | Format-Table -Wrap; throw 'PSScriptAnalyzer meldet Fehler' }
+      - name: install.ps1 bleibt ASCII, setup.ps1 hat ein BOM
+        run: |
+          if LC_ALL=C grep -nP '[^\x00-\x7F]' install.ps1; then echo "install.ps1 muss ASCII bleiben"; exit 1; fi
+          [ "$(head -c3 setup.ps1 | od -An -tx1 | tr -d ' ')" = "efbbbf" ] || { echo "setup.ps1 braucht UTF-8 mit BOM"; exit 1; }
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Agent-Rechner installieren
+        run: bash install.sh --yes --role agent --skip-hermes
+      - name: Zweiter Lauf (muss ohne Fehler durchlaufen)
+        run: bash install.sh --yes --role agent --skip-hermes
+      - name: Prüfen
+        run: |
+          systemctl is-active "syncthing@$USER"
+          systemctl is-active rustdesk
+          [ "$(sudo rustdesk --option custom-rendezvous-server)" = "rustdesk.klaus-schwarzkopf.de:21116" ]
+          [ "$(sudo rustdesk --option verification-method)" = "use-permanent-password" ]
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8384/rest/system/status); [ "$code" = 403 ]
+          grep -qx '.trash' ~/evooming-Brain/.stignore
+          dpkg -s google-chrome-stable chatgpt >/dev/null
+      - name: Workstation installieren
+        run: bash install.sh --yes --role workstation --skip-hermes && dpkg -s obsidian >/dev/null
+      - name: Über curl | bash (wie im Kurs)
+        run: curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/install.sh" | bash -s -- --dry-run --role agent
+
+  hermes-linux:
+    # Hermes ohne Assistent, prüft nur, dass der offizielle Installer mit unserem Aufruf durchläuft
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          curl -fsSL -o /tmp/hermes-install.sh https://hermes-agent.nousresearch.com/install.sh
+          bash /tmp/hermes-install.sh --non-interactive </dev/null
+          ~/.local/bin/hermes --version || "$HOME/.hermes/bin/hermes" --version
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probelauf Agent-Rechner
+        run: bash install.sh --dry-run --role agent
+      - name: Workstation installieren
+        # Der RustDesk-Server lässt sich auf dem Mac erst nach Freigabe der Rechte eintragen (nur Warnung)
+        run: bash install.sh --yes --role workstation --skip-hermes
+      - name: Prüfen
+        run: |
+          brew list --cask obsidian rustdesk >/dev/null
+          brew services list | grep -E '^syncthing +started'
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probelauf beide Rollen (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -DryRun -Role agent
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -DryRun -Role workstation
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Über irm | iex (wie im Kurs)
+        shell: powershell
+        env:
+          EVOOMING_SETUP_URL: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}
+          EVOOMING_DRY_RUN: "1"
+          EVOOMING_ROLE: agent
+        run: irm "$env:EVOOMING_SETUP_URL/install.ps1" | iex
+
+  windows-install:
+    # Echte Installation. winget und der Microsoft Store fehlen auf den GitHub-Servern teilweise,
+    # deshalb nur Syncthing und RustDesk prüfen.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Agent-Rechner installieren
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -Yes -Role agent -SkipHermes; exit 0
+      - name: Prüfen
+        shell: powershell
+        run: |
+          if ((Get-Service syncthing*).Status -ne 'Running') { throw 'Syncthing-Dienst läuft nicht' }
+          if ((Get-Service RustDesk).Status -ne 'Running') { throw 'RustDesk-Dienst läuft nicht' }
+          $server = (& "$env:ProgramFiles\RustDesk\rustdesk.exe" --option custom-rendezvous-server | Out-String).Trim()
+          if ($server -notlike 'rustdesk.klaus-schwarzkopf.de*') { throw "RustDesk-Server falsch: $server" }
+          if ((Get-Content -Raw "$env:ProgramData\Syncthing\config.xml") -notmatch '<user>[^<]+</user>') { throw 'Syncthing ohne Passwort' }
