@@ -153,6 +153,11 @@ apt_get() { run $SUDO env DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
 install_deb() { # install_deb Paketname URL
     local file="$TMP_DIR/$1.deb"
     download "$2" "$file" || return 1
+    apt_get install -y "$file" && return 0
+    # Bei Netzwerk-Aussetzern einmal mit frischen Paketlisten neu versuchen
+    info "Neuer Versuch in 10 Sekunden ..."
+    sleep 10
+    apt_get update -qq
     apt_get install -y "$file"
 }
 
@@ -398,7 +403,8 @@ setup_syncthing() {
                 | run sudo tee "$list" >/dev/null
             apt_get update -qq
         fi
-        apt_get install -y syncthing || { fail "Syncthing" "Installation fehlgeschlagen"; return; }
+        apt_get install -y syncthing || { sleep 10; apt_get update -qq; apt_get install -y syncthing; } \
+            || { fail "Syncthing" "Installation fehlgeschlagen"; return; }
         run sudo systemctl enable --now "syncthing@$USER" >/dev/null 2>&1 \
             || { fail "Syncthing" "Dienst ließ sich nicht starten"; return; }
     fi
