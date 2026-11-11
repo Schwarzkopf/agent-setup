@@ -124,10 +124,23 @@ download() {
     curl -fsSL --retry 3 -o "$2" "$1" && chmod 644 "$2"
 }
 
-# gh_latest_asset owner/repo 'regex' -> URL des passenden Assets aus dem neuesten Release
+# gh_latest_asset owner/repo 'regex' 'vorlage' -> URL des passenden Assets aus dem neuesten Release
+# Ohne Anmeldung erlaubt die GitHub-API 60 Abfragen pro Stunde und Netz. Ist sie erschöpft,
+# kommt die Version aus der Weiterleitung von releases/latest und der Dateiname aus der Vorlage
+# ({tag} = Release-Name, {ver} = ohne führendes v).
 gh_latest_asset() {
-    curl -fsSL --retry 3 "https://api.github.com/repos/$1/releases/latest" \
-        | grep '"browser_download_url"' | cut -d'"' -f4 | grep -E "$2" | head -n 1
+    local url tag ver auth=()
+    [ -n "${GITHUB_TOKEN:-}" ] && auth=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    url="$(curl -fsSL --retry 3 "${auth[@]}" "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+        | grep '"browser_download_url"' | cut -d'"' -f4 | grep -E "$2" | head -n 1)"
+    if [ -z "$url" ] && [ -n "$3" ]; then
+        tag="$(curl -fsSI --retry 3 -o /dev/null -w '%{redirect_url}' "https://github.com/$1/releases/latest" | sed 's#.*/tag/##')"
+        if [ -n "$tag" ]; then
+            ver="${tag#v}"
+            url="https://github.com/$1/releases/download/$tag/$(printf '%s' "$3" | sed "s/{ver}/$ver/g; s/{tag}/$tag/g")"
+        fi
+    fi
+    printf '%s\n' "$url"
 }
 
 # Versionsnummer aus einem Asset-Dateinamen, z. B. rustdesk-1.5.3-x86_64.deb -> 1.5.3
@@ -462,8 +475,9 @@ setup_rustdesk() {
         brew_cask rustdesk "RustDesk"
     else
         local re url latest current
-        if [ "$ARCH" = "x86_64" ]; then re='rustdesk-[0-9.]+-x86_64\.deb$'; else re='rustdesk-[0-9.]+-aarch64\.deb$'; fi
-        url="$(gh_latest_asset rustdesk/rustdesk "$re")"
+        local rarch="x86_64"; [ "$ARCH" = "arm64" ] && rarch="aarch64"
+        re="rustdesk-[0-9.]+-$rarch\.deb\$"
+        url="$(gh_latest_asset rustdesk/rustdesk "$re" "rustdesk-{ver}-$rarch.deb")"
         [ -n "$url" ] || { fail "RustDesk" "neueste Version nicht gefunden (GitHub nicht erreichbar?)"; return; }
         latest="$(version_from_url "$url")"; current="$(deb_version rustdesk)"
         if [ "$current" = "$latest" ]; then
@@ -548,7 +562,7 @@ setup_obsidian() {
         return
     fi
     local url latest current
-    url="$(gh_latest_asset obsidianmd/obsidian-releases 'obsidian_[0-9.]+_amd64\.deb$')"
+    url="$(gh_latest_asset obsidianmd/obsidian-releases 'obsidian_[0-9.]+_amd64\.deb$' 'obsidian_{ver}_amd64.deb')"
     [ -n "$url" ] || { fail "Obsidian" "neueste Version nicht gefunden (GitHub nicht erreichbar?)"; return; }
     latest="$(version_from_url "$url")"; current="$(deb_version obsidian)"
     if [ "$current" = "$latest" ]; then ok "Obsidian" "ist aktuell ($latest)"

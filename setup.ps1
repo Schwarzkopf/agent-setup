@@ -131,14 +131,29 @@ function Update-PathFromRegistry {
     $env:Path = "$machine;$user"
 }
 
-function Get-LatestGitHubAsset([string]$Repo, [string]$Pattern) {
+# Ohne Anmeldung erlaubt die GitHub-API 60 Abfragen pro Stunde und Netz. Ist sie erschöpft,
+# kommt die Version aus der Weiterleitung von releases/latest und der Dateiname aus der Vorlage
+# ({tag} = Release-Name, {ver} = ohne führendes v).
+function Get-LatestGitHubAsset([string]$Repo, [string]$Pattern, [string]$Template) {
+    $headers = @{ 'User-Agent' = 'evooming-agent-setup' }
+    if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
     try {
-        $rel = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers @{ 'User-Agent' = 'evooming-agent-setup' }
+        $rel = Invoke-RestMethod -UseBasicParsing -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $headers
+        $asset = $rel.assets | Where-Object { $_.name -match $Pattern } | Select-Object -First 1
+        if ($asset) {
+            $version = ([regex]::Match($asset.name, '\d+(\.\d+)+')).Value
+            return [pscustomobject]@{ Url = $asset.browser_download_url; Name = $asset.name; Version = $version }
+        }
+    } catch { Write-Verbose "GitHub-API: $($_.Exception.Message)" }
+    try {
+        $req = [Net.HttpWebRequest]::Create("https://github.com/$Repo/releases/latest")
+        $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.UserAgent = 'evooming-agent-setup'
+        $resp = $req.GetResponse(); $location = $resp.Headers['Location']; $resp.Close()
     } catch { return $null }
-    $asset = $rel.assets | Where-Object { $_.name -match $Pattern } | Select-Object -First 1
-    if (-not $asset) { return $null }
-    $version = ([regex]::Match($asset.name, '\d+(\.\d+)+')).Value
-    return [pscustomobject]@{ Url = $asset.browser_download_url; Name = $asset.name; Version = $version }
+    if ($location -notmatch '/tag/([^/]+)$') { return $null }
+    $tag = $Matches[1]; $ver = $tag -replace '^v', ''
+    $name = $Template.Replace('{tag}', $tag).Replace('{ver}', $ver)
+    return [pscustomobject]@{ Url = "https://github.com/$Repo/releases/download/$tag/$name"; Name = $name; Version = $ver }
 }
 
 function Save-Download([string]$Url, [string]$Path) {
@@ -216,7 +231,7 @@ function Get-SyncthingExe {
 
 function Install-Syncthing($State) {
     Write-Step 'Syncthing (Windows-Dienst)'
-    $rel = Get-LatestGitHubAsset 'Bill-Stewart/SyncthingWindowsSetup' '^syncthing-windows-setup-v[\d.]+\.exe$'
+    $rel = Get-LatestGitHubAsset 'Bill-Stewart/SyncthingWindowsSetup' '^syncthing-windows-setup-v[\d.]+\.exe$' 'syncthing-windows-setup-{tag}.exe'
     if (-not $rel) { Fail 'Syncthing' 'neueste Version nicht gefunden (GitHub nicht erreichbar?)'; return }
 
     # Syncthing aktualisiert sich danach alle 12 Stunden selbst
@@ -287,7 +302,7 @@ function Set-VaultFolder($State) {
 function Install-RustDesk($State) {
     Write-Step 'RustDesk'
     $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-    $rel = Get-LatestGitHubAsset 'rustdesk/rustdesk' "^rustdesk-[\d.]+-$arch\.msi$"
+    $rel = Get-LatestGitHubAsset 'rustdesk/rustdesk' "^rustdesk-[\d.]+-$arch\.msi$" "rustdesk-{ver}-$arch.msi"
     if (-not $rel) { Fail 'RustDesk' 'neueste Version nicht gefunden (GitHub nicht erreichbar?)'; return }
 
     $current = Get-InstalledVersion 'RustDesk*'

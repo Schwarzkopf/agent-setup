@@ -12,6 +12,8 @@ on:
   workflow_call:
 
 env:
+  # Gegen das Abfragelimit der GitHub-API auf geteilten Servern
+  GITHUB_TOKEN: ${{ github.token }}
   EVOOMING_SYNCTHING_PASSWORD: ci-test-passwort
   EVOOMING_RUSTDESK_PASSWORD: ci-test-passwort-rustdesk
 
