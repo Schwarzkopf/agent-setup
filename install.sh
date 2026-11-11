@@ -520,8 +520,12 @@ setup_rustdesk() {
                 sudo "$bin" --option verification-method use-permanent-password >/dev/null 2>&1
                 ok "RustDesk-Zugriff" "dauerhaftes Passwort gesetzt, nur dieses Passwort gilt"
             else
-                fail "RustDesk-Zugriff" "Passwort ließ sich nicht setzen"
-                next_step "RustDesk: dauerhaftes Passwort von Hand setzen (Lektion 3.3, Schritt 3)."
+                if [ "$OS" = "linux" ]; then
+                    fail "RustDesk-Zugriff" "Passwort ließ sich nicht setzen (RustDesk braucht eine angemeldete Bildschirmsitzung, nicht SSH)"
+                else
+                    fail "RustDesk-Zugriff" "Passwort ließ sich nicht setzen"
+                fi
+                next_step "RustDesk: dauerhaftes Passwort von Hand setzen (Lektion 3.3, Schritt 3) oder das Skript am Bildschirm des Agent-Rechners noch einmal starten."
             fi
         elif rustdesk_permanent_set; then
             ok "RustDesk-Zugriff" "dauerhaftes Passwort ist schon eingerichtet"
@@ -576,7 +580,7 @@ setup_chatgpt() {
     step "ChatGPT Desktop"
     if [ "$OS" = "mac" ]; then
         if [ "$ARCH" != "arm64" ]; then skip "ChatGPT Desktop" "gibt es nur für Macs mit Apple-Chip"; return; fi
-        brew_cask chatgpt "ChatGPT"
+        brew_cask chatgpt "ChatGPT"  # App-Name in /Applications
     else
         local deb="chatgpt_amd64.deb"; [ "$ARCH" = "arm64" ] && deb="chatgpt_arm64.deb"
         if install_deb chatgpt "https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/$deb"; then
